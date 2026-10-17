@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Sdk Name="Aspire.AppHost.Sdk" Version="13.6.1" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UserSecretsId>aspire-langfuse-example</UserSecretsId>
+    <AspireUseCliBundle>true</AspireUseCliBundle>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.AppHost" Version="13.6.1" />
+    <PackageReference Include="CommunityToolkit.Aspire.Hosting.Ollama" Version="13.6.0" />
+    <ProjectReference Include="../../src/Aspire.Langfuse.csproj" IsAspireProjectResource="false" />
+    <ProjectReference Include="../Langfuse.Agent/Langfuse.Agent.csproj" />
+  </ItemGroup>
+</Project>

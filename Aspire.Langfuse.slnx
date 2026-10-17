@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Aspire.Langfuse.csproj" />
+  </Folder>
+  <Folder Name="/examples/">
+    <Project Path="examples/Langfuse.Agent/Langfuse.Agent.csproj" />
+    <Project Path="examples/Langfuse.AppHost/Langfuse.AppHost.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Aspire.Langfuse.Tests.csproj" />
+    <Project Path="tests/SmokeTests/SmokeTests.csproj" />
+  </Folder>
+</Solution>
