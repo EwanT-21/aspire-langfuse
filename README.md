@@ -15,7 +15,7 @@ Until a package is published, add a project reference:
                   IsAspireProjectResource="false" />
 ```
 
-Extensions are in `Aspire.Hosting`; configuration types are in `CommunityToolkit.Aspire.Hosting.Langfuse`. The package ID is `CommunityToolkit.Aspire.Hosting.Langfuse`.
+Extensions are in `Aspire.Hosting`; configuration types are in `CommunityToolkit.Aspire.Hosting.Langfuse`. The package ID is `EwanT21.Aspire.Hosting.Langfuse`.
 
 ## Start a complete stack
 
@@ -224,3 +224,19 @@ dotnet run --project tests/SmokeTests -- --agent=true
 The second command tests reuse of caller-supplied PostgreSQL, Redis, and an emulated Azure Blob resource. The agent test requires a nonempty model response, a real tool invocation, and persisted `AGENT`, `GENERATION`, and `TOOL` observations with the configured model. Add `--gpu=false` for CPU execution or `--shared=true` to combine modes. The model cache volume remains after the test.
 
 Langfuse v4 ingestion uses OTLP with `x-langfuse-ingestion-version: 4`; the legacy `trace-create` ingestion event is not accepted by its default data model.
+
+## CI and NuGet releases
+
+[CI](.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and manual dispatch. It restores and builds the whole solution in Release, runs the model tests, and packs the hosting library. The workflow uploads test results, the `.nupkg`, and the `.snupkg` as Actions artifacts. Packages include the repository metadata and Source Link information for debugging. Docker and GPU-dependent smoke tests remain explicit commands from the section above.
+
+[Publish NuGet](.github/workflows/publish-nuget.yml) runs when a GitHub Release is published. It calls the same CI workflow, checks that the release tag matches the project version, and publishes those validated package artifacts to NuGet.org. Publishing uses [NuGet trusted publishing](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing), which exchanges GitHub's OIDC token for a short-lived API key.
+
+One-time setup:
+
+1. In GitHub, create an environment named `nuget`. Add an Actions variable named `NUGET_USER` there (or at repository level) containing your NuGet.org **profile username**, not your email address.
+2. In your NuGet.org account, add a trusted publishing policy with repository owner `EwanT-21`, repository `aspire-langfuse`, workflow file **`publish-nuget.yml`**, and environment **`nuget`**. Scope the policy to `EwanT21.Aspire.Hosting.Langfuse` with permissions to push new packages and versions. The workflow file field takes only the file name.
+3. Push the workflows to GitHub. Run **CI** manually from the Actions tab to check the build before your first release.
+
+For each release, update `<Version>` in [Aspire.Langfuse.csproj](src/Aspire.Langfuse.csproj), commit it, and publish a GitHub Release tagged `v<Version>`, for example `v0.1.0`. For a prerelease, use a version such as `0.2.0-beta.1`, tag it `v0.2.0-beta.1`, and mark the GitHub Release as a prerelease. A version or prerelease mismatch fails before publication. A push to `main` or a draft release does not publish a package.
+
+The publish job downloads the packages built by CI rather than rebuilding them. Duplicate versions are skipped so a rerun can complete a partially successful package/symbol upload. A release still needs a new version when its package contents change.
