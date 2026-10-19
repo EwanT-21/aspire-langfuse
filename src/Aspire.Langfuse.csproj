@@ -7,7 +7,7 @@
     <AssemblyName>CommunityToolkit.Aspire.Hosting.Langfuse</AssemblyName>
     <RootNamespace>CommunityToolkit.Aspire.Hosting.Langfuse</RootNamespace>
     <PackageId>EwanT21.Aspire.Hosting.Langfuse</PackageId>
-    <Version>0.1.0-beta.1</Version>
+    <Version>0.1.0-beta.2</Version>
     <Authors>EwanT-21</Authors>
     <Description>An Aspire hosting integration for Langfuse with composable infrastructure and existing endpoint support.</Description>
     <PackageProjectUrl>https://github.com/EwanT-21/aspire-langfuse</PackageProjectUrl>
