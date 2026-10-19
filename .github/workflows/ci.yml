@@ -35,6 +35,23 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Set up Aspire CLI bundle
+        shell: bash
+        env:
+          ASPIRE_HOME: ${{ runner.temp }}/aspire
+          AspireCliPath: ${{ runner.temp }}/aspire/bin/aspire
+        run: |
+          # Match Aspire.AppHost.Sdk in the AppHost projects.
+          curl --fail --silent --show-error --location \
+            https://aspire.dev/install.sh --output "$RUNNER_TEMP/install-aspire.sh"
+          bash "$RUNNER_TEMP/install-aspire.sh" \
+            --version 13.6.1 --install-path "$ASPIRE_HOME/bin" --skip-path
+          # Prepare the bundle once before both AppHosts build in parallel.
+          "$AspireCliPath" setup --install-path "$ASPIRE_HOME"
+          echo "$ASPIRE_HOME/bin" >> "$GITHUB_PATH"
+          echo "ASPIRE_HOME=$ASPIRE_HOME" >> "$GITHUB_ENV"
+          echo "AspireCliPath=$AspireCliPath" >> "$GITHUB_ENV"
+
       - name: Verify release version
         if: github.event_name == 'release'
         shell: bash

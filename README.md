@@ -227,7 +227,7 @@ Langfuse v4 ingestion uses OTLP with `x-langfuse-ingestion-version: 4`; the lega
 
 ## CI and NuGet releases
 
-[CI](.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and manual dispatch. It restores and builds the whole solution in Release, runs the model tests, and packs the hosting library. The workflow uploads test results, the `.nupkg`, and the `.snupkg` as Actions artifacts. Packages include the repository metadata and Source Link information for debugging. Docker and GPU-dependent smoke tests remain explicit commands from the section above.
+[CI](.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and manual dispatch. It installs .NET and Aspire CLI 13.6.1, extracts the CLI bundle into the runner's temporary directory, then restores and builds the whole solution in Release, runs the model tests, and packs the hosting library. Keep the CLI version in the workflow aligned with `Aspire.AppHost.Sdk` in the AppHost projects. Explicit setup prepares the dashboard and DCP before the solution's AppHost projects build in parallel. The workflow uploads test results, the `.nupkg`, and the `.snupkg` as Actions artifacts. Packages include the repository metadata and Source Link information for debugging. Docker and GPU-dependent smoke tests remain explicit commands from the section above.
 
 [Publish NuGet](.github/workflows/publish-nuget.yml) runs when a GitHub Release is published. It calls the same CI workflow, checks that the release tag matches the project version, and publishes those validated package artifacts to NuGet.org. Publishing uses [NuGet trusted publishing](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing), which exchanges GitHub's OIDC token for a short-lived API key.
 
