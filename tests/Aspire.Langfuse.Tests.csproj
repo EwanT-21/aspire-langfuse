@@ -13,5 +13,6 @@
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" PrivateAssets="all" />
     <ProjectReference Include="../src/Aspire.Langfuse.csproj" />
+    <ProjectReference Include="../examples/Langfuse.Agent/Langfuse.Agent.csproj" />
   </ItemGroup>
 </Project>

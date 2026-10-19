@@ -11,7 +11,7 @@ Requires .NET 10 and Aspire 13.6.1. To run Langfuse locally, you also need Docke
 From your AppHost directory, install the package:
 
 ```bash
-dotnet add package EwanT21.Aspire.Hosting.Langfuse --version 0.1.0-beta.1
+dotnet add package EwanT21.Aspire.Hosting.Langfuse --version 0.1.0-beta.3
 ```
 
 ## Quick start
@@ -214,7 +214,7 @@ When deploying with Aspire, configure managed blob storage, set `PublicUrl`, and
 
 ## Try the example
 
-The repository includes an [AppHost](https://github.com/EwanT-21/aspire-langfuse/tree/main/examples/Langfuse.AppHost) and a chat application using Microsoft Agent Framework and Ollama. The agent checks Langfuse's health and sends its agent, model, and tool traces to Langfuse through OTLP.
+The repository includes an [AppHost](https://github.com/EwanT-21/aspire-langfuse/tree/main/examples/Langfuse.AppHost) and a chat application using Microsoft Agent Framework and Ollama. You can edit its instructions in Langfuse and try the changed prompt on the next message, without restarting the application.
 
 From a checkout of this repository, run:
 
@@ -222,7 +222,9 @@ From a checkout of this repository, run:
 dotnet run --project examples/Langfuse.AppHost -- --Agent:UseGpu=false
 ```
 
-The first run downloads the `qwen3.5:2b` model. Open the `agent` endpoint in the Aspire dashboard to chat, then open `langfuse` to view the traces. The example records prompts, tool results, and responses.
+The first run downloads the `qwen3.5:2b` model. Local and shared modes automatically create the chat prompt `aspire-health-assistant` and an `aspire-ollama` model connection for Playground. The connection uses Ollama's internal container endpoint, which the example allows explicitly on both Langfuse containers.
+
+Open the `agent` endpoint in the Aspire dashboard. The chat page links to the prompt editor and Playground, and each response includes the prompt version and a link to its trace. Prompts, tool results, and responses are recorded in Langfuse.
 
 Sign in to Langfuse as `agent@example.test`. Find the generated `Parameters:langfuse-user-password` value with:
 
@@ -232,16 +234,30 @@ dotnet user-secrets list --project examples/Langfuse.AppHost
 
 The example saves its credentials in user secrets and keeps its data in Docker volumes. An existing database keeps its original login credentials.
 
+### Iterate on a prompt
+
+1. Send **Check Langfuse health** in the chat application to get a baseline response.
+2. Follow **Edit prompt** and create a new version of `aspire-health-assistant`. For example, change the system message to request a different response format. Keep the instruction to call `get_langfuse_health` when checking health.
+3. Keep the user message's `{{message}}` variable, which receives the text entered in chat, and save the new version.
+4. Send the same question again. The agent fetches the `latest` prompt for every request. **Run details** shows the version used, and each model generation links to that version in Langfuse.
+5. Use **Test in Playground** from the prompt editor to compare variants. Select the `aspire-ollama` connection and the downloaded model, and enter a value for `message`.
+
+Playground calls Ollama directly. For prompts that call tools, provide mocked tool responses in Playground; the chat application runs the real `get_langfuse_health` tool. See [Langfuse's Playground guide](https://langfuse.com/docs/prompt-management/features/playground).
+
+The prompt's JSON config supports `model`, `temperature`, and `max_tokens`. When `model` is omitted, the agent uses `Agent:Model`. A different model must already be available in Ollama. Restarting the example preserves saved prompt versions and refreshes only its `aspire-ollama` connection. To follow a deployment label instead of every saved version, use `--Agent:PromptLabel=production` and assign that label to the version you want to run.
+
 To use an NVIDIA GPU, omit `--Agent:UseGpu=false` and make sure Docker has GPU access. Other options:
 
 | Argument | Effect |
 | --- | --- |
 | `--Agent:Model=qwen3.5:0.8b` | Use a different Ollama model. |
 | `--Agent:Enabled=false` | Run the Langfuse stack without the agent or Ollama. |
+| `--Agent:PromptName=my-prompt` | Use a different Langfuse chat prompt with the `{{message}}` variable. |
+| `--Agent:PromptLabel=production` | Fetch the version carrying a specific label. Defaults to `latest`. |
 | `--Langfuse:Mode=shared` | Reuse PostgreSQL, Redis, and blob storage resources from the AppHost. |
 | `--Langfuse:Mode=existing` | Connect to an existing Langfuse instance while running the agent and Ollama locally. |
 
-For `existing` mode, set `Parameters:langfuse-url`, `Parameters:langfuse-public-key`, and `Parameters:langfuse-secret-key` in the example AppHost's user secrets.
+For `existing` mode, set `Parameters:langfuse-url`, `Parameters:langfuse-public-key`, and `Parameters:langfuse-secret-key` in the example AppHost's user secrets. Create the selected chat prompt and model connection in your project beforehand. Automatic initialization is disabled for existing instances; opt in to creating a missing prompt with `--Agent:InitializeLangfuse=true`. An existing prompt is always preserved. Configure a model endpoint reachable from that Langfuse instance for Playground; a cloud instance cannot access your local Ollama container.
 
 ## Development
 
@@ -258,6 +274,10 @@ dotnet run --project tests/SmokeTests
 dotnet run --project tests/SmokeTests -- --shared=true
 dotnet run --project tests/SmokeTests -- --agent=true --gpu=false
 ```
+
+The agent smoke test also checks the Playground connection, saves a second prompt version, runs the agent again without a restart, and verifies that its persisted generation observations link to the new version.
+
+To run it on GitHub, start the **CI** workflow manually and enable **Run the Docker and Ollama prompt iteration smoke test on CPU**. The workflow uploads its log with the test results.
 
 Found a bug or have a suggestion? [Open an issue](https://github.com/EwanT-21/aspire-langfuse/issues).
 

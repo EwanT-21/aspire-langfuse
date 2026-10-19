@@ -79,9 +79,19 @@ if (builder.Configuration.GetValue("Agent:Enabled", true))
         .WithHttpEndpoint(name: "http")
         .WithHttpHealthCheck("/health")
         .WithReference(model)
-        .WaitFor(model);
+        .WaitFor(model)
+        .WithEnvironment("Langfuse__Initialize", builder.Configuration.GetValue("Agent:InitializeLangfuse", hosted is not null).ToString())
+        .WithEnvironment("Langfuse__PromptName", builder.Configuration["Agent:PromptName"] ?? "aspire-health-assistant")
+        .WithEnvironment("Langfuse__PromptLabel", builder.Configuration["Agent:PromptLabel"] ?? "latest");
     if (hosted is not null)
     {
+        var ollamaEndpoint = ollama.GetEndpoint(ollama.Resource.PrimaryEndpoint.EndpointName,
+            KnownNetworkIdentifiers.DefaultAspireContainerNetwork);
+        agent.WithEnvironment("Langfuse__PlaygroundBaseUrl", ollamaEndpoint);
+        foreach (IResourceBuilder<ContainerResource> container in new IResourceBuilder<ContainerResource>[] { hosted, hosted.Resource.Worker })
+        {
+            container.WithEnvironment("LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST", ollamaEndpoint.Property(EndpointProperty.Host));
+        }
         agent.WithReference(hosted).WaitFor(hosted).WaitFor(hosted.Resource.Worker);
     }
     else

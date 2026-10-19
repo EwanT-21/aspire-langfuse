@@ -5,6 +5,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      run_agent_smoke:
+        description: Run the Docker and Ollama prompt iteration smoke test on CPU
+        type: boolean
+        default: false
   workflow_call:
 
 permissions:
@@ -93,12 +98,20 @@ jobs:
           -p:ContinuousIntegrationBuild=true
           --output artifacts/packages
 
+      - name: Test prompt iteration with Ollama
+        if: github.event_name == 'workflow_dispatch' && inputs.run_agent_smoke
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          dotnet tests/SmokeTests/bin/Release/net10.0/SmokeTests.dll --agent=true --gpu=false \
+            2>&1 | tee artifacts/test-results/agent-smoke.log
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results
-          path: artifacts/test-results/*.trx
+          path: artifacts/test-results/
           if-no-files-found: ignore
           retention-days: 14
 

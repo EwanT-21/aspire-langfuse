@@ -1,6 +1,8 @@
 using System.Data.Common;
 using System.Diagnostics;
+using System.Net.Http.Headers;
 using System.Text;
+using Langfuse.Agent;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using OllamaSharp;
@@ -15,6 +17,7 @@ const string ActivitySourceName = "Langfuse.OllamaAgent";
 const string DefaultPrompt = "Use get_langfuse_health to check the Langfuse instance, then briefly tell me whether it is healthy.";
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddProblemDetails();
 var connection = new DbConnectionStringBuilder
 {
     ConnectionString = builder.Configuration.GetConnectionString("chat")
@@ -48,14 +51,58 @@ using IChatClient modelClient = ((IChatClient)new OllamaApiClient(ollamaHttp, mo
     .AsBuilder()
     .UseOpenTelemetry(sourceName: ActivitySourceName, configure: options => options.EnableSensitiveData = true)
     .Build();
-using var langfuseHttp = new HttpClient { BaseAddress = langfuseUrl, Timeout = TimeSpan.FromSeconds(30) };
+using var langfuseHttp = new HttpClient
+{
+    BaseAddress = new Uri(langfuseUrl.AbsoluteUri.TrimEnd('/') + "/"),
+    Timeout = TimeSpan.FromSeconds(30)
+};
+langfuseHttp.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic",
+    Convert.ToBase64String(Encoding.UTF8.GetBytes($"{publicKey}:{secretKey}")));
+var promptName = builder.Configuration["Langfuse:PromptName"] ?? LangfusePromptClient.DefaultName;
+var promptLabel = builder.Configuration["Langfuse:PromptLabel"] ?? "latest";
+var prompts = new LangfusePromptClient(langfuseHttp, promptName, promptLabel);
 
 var app = builder.Build();
+using (var startup = new CancellationTokenSource(TimeSpan.FromMinutes(1)))
+{
+    var playgroundUrl = builder.Configuration["Langfuse:PlaygroundBaseUrl"];
+    await prompts.InitializeAsync(modelName,
+        builder.Configuration.GetValue("Langfuse:Initialize", false),
+        string.IsNullOrWhiteSpace(playgroundUrl) ? null : new Uri(playgroundUrl), startup.Token);
+}
+app.Logger.LogInformation("Using Langfuse prompt {PromptName} ({PromptLabel}). Edit it at {PromptsUrl}",
+    promptName, promptLabel, prompts.PromptsUrl);
+app.UseExceptionHandler();
 app.UseDefaultFiles();
 app.UseStaticFiles();
-app.MapGet("/health", () => Results.Ok(new { status = "healthy", model = modelName }));
+app.MapGet("/health", () => Results.Ok(new
+{
+    status = "healthy", model = modelName, promptName, promptLabel,
+    promptsUrl = prompts.PromptsUrl, playgroundUrl = prompts.PlaygroundUrl
+}));
 app.MapPost("/run", async (AgentRequest request, CancellationToken cancellationToken) =>
 {
+    ManagedPrompt managedPrompt;
+    IReadOnlyList<ChatMessage> messages;
+    string selectedModel;
+    float temperature;
+    int maxOutputTokens;
+    try
+    {
+        // Fetch every time so saving a new latest version in Langfuse affects the next run.
+        managedPrompt = await prompts.GetAsync(cancellationToken);
+        messages = managedPrompt.Compile(string.IsNullOrWhiteSpace(request.Prompt) ? DefaultPrompt : request.Prompt);
+        selectedModel = managedPrompt.Model(modelName);
+        temperature = managedPrompt.Temperature;
+        maxOutputTokens = managedPrompt.MaxOutputTokens;
+    }
+    catch (Exception error) when (error is HttpRequestException or InvalidOperationException)
+    {
+        app.Logger.LogError(error, "Could not load the managed prompt {PromptName}", promptName);
+        return Results.Problem(detail: "Could not load the prompt. Check its messages, config, and selected label in Langfuse.",
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    using var promptScope = LangfuseObservationProcessor.UsePrompt(managedPrompt);
     var toolCalls = 0;
     var prompt = string.IsNullOrWhiteSpace(request.Prompt) ? DefaultPrompt : request.Prompt;
     string answer;
@@ -71,6 +118,8 @@ app.MapPost("/run", async (AgentRequest request, CancellationToken cancellationT
         run.SetTag("langfuse.observation.type", "chain");
         run.SetTag("langfuse.trace.name", "ollama-langfuse-health-check");
         run.SetTag("langfuse.observation.input", prompt);
+        run.SetTag("langfuse.observation.metadata.prompt_name", managedPrompt.Name);
+        run.SetTag("langfuse.observation.metadata.prompt_version", managedPrompt.Version);
 
         async Task<string> GetLangfuseHealth(CancellationToken token)
         {
@@ -90,10 +139,10 @@ app.MapPost("/run", async (AgentRequest request, CancellationToken cancellationT
             Name = "LangfuseHealthAgent",
             ChatOptions = new ChatOptions
             {
-                Instructions = "You are an operations assistant. Always call get_langfuse_health before answering a health question. Use the tool result to answer briefly. Do not invent service status.",
                 Tools = [AIFunctionFactory.Create(GetLangfuseHealth, "get_langfuse_health", "Check the live Langfuse instance and return its health status.")],
-                Temperature = 0,
-                MaxOutputTokens = 512,
+                ModelId = selectedModel,
+                Temperature = temperature,
+                MaxOutputTokens = maxOutputTokens,
                 RawRepresentationFactory = _ => new ChatRequest
                 {
                     Think = false,
@@ -105,7 +154,7 @@ app.MapPost("/run", async (AgentRequest request, CancellationToken cancellationT
             .UseOpenTelemetry(ActivitySourceName, configure: options => options.EnableSensitiveData = true)
             .Build();
 
-        var result = await agent.RunAsync(prompt, cancellationToken: cancellationToken);
+        var result = await agent.RunAsync(messages, cancellationToken: cancellationToken);
         answer = result.Text;
         run.SetTag("langfuse.observation.output", answer);
         run.SetTag("agent.tool_calls", toolCalls);
@@ -116,26 +165,13 @@ app.MapPost("/run", async (AgentRequest request, CancellationToken cancellationT
         throw new InvalidOperationException("Timed out exporting agent telemetry to Langfuse.");
     }
 
-    return Results.Ok(new { answer, traceId, model = modelName, toolCalls });
+    return Results.Ok(new
+    {
+        answer, traceId, model = selectedModel, toolCalls,
+        prompt = new { name = managedPrompt.Name, version = managedPrompt.Version, label = promptLabel },
+        traceUrl = prompts.TraceUrl(traceId), promptsUrl = prompts.PromptsUrl
+    });
 });
-app.Run();
+await app.RunAsync();
 
 internal sealed record AgentRequest(string? Prompt);
-
-internal sealed class LangfuseObservationProcessor : BaseProcessor<Activity>
-{
-    public override void OnEnd(Activity activity)
-    {
-        var type = activity.GetTagItem("gen_ai.operation.name")?.ToString() switch
-        {
-            "invoke_agent" => "agent",
-            "chat" or "text_completion" => "generation",
-            "execute_tool" => "tool",
-            _ => null
-        };
-        if (type is not null)
-        {
-            activity.SetTag("langfuse.observation.type", type);
-        }
-    }
-}

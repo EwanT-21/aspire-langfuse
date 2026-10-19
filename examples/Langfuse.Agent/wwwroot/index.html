@@ -20,6 +20,9 @@
     svg { width: 20px; height: 20px; flex-shrink: 0; }
     header { display: flex; align-items: center; gap: 12px; padding: 16px 24px; }
     header strong { font-size: 17px; font-weight: 600; letter-spacing: -.3px; }
+    nav { display: flex; gap: 14px; margin-left: auto; }
+    nav a, details a { color: #525252; font-size: 12px; text-underline-offset: 3px; }
+    #prompt-info { font-size: 12px; color: #737373; }
     #model { color: #737373; font-size: 12px; background: #f5f5f5; padding: 3px 10px; border-radius: 20px; }
     #clear { margin-left: auto; display: flex; align-items: center; gap: 7px; padding: 7px 11px; color: #525252; background: transparent; border: 1px solid #e5e5e5; border-radius: 8px; font-size: 13px; }
     #clear:hover { background: #f5f5f5; }
@@ -55,13 +58,17 @@
     #send:disabled { background: #d4d4d8; opacity: 1; }
     .footnote { margin: 10px 0 0; text-align: center; font-size: 11px; color: #85858d; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-    @media (max-width: 520px) { header { padding: 14px 16px; gap: 8px; } .column { padding-left: 16px; padding-right: 16px; } #model { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } #clear span { display: none; } }
+    @media (max-width: 520px) { header { padding: 14px 16px; gap: 8px; flex-wrap: wrap; } nav { order: 4; flex-basis: 100%; justify-content: center; } .column { padding-left: 16px; padding-right: 16px; } #model { max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } #clear span { display: none; } }
   </style>
 </head>
 <body>
   <header>
     <strong>Langfuse chat</strong>
     <span id="model">Ollama</span>
+    <nav aria-label="Langfuse tools">
+      <a id="prompts-link" hidden target="_blank" rel="noopener noreferrer">Edit prompt</a>
+      <a id="playground-link" hidden target="_blank" rel="noopener noreferrer">Playground</a>
+    </nav>
     <button id="clear" type="button" aria-label="Clear chat" title="Clear chat">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7M16 3l5 5M10 14l3-1 9-9-2-2-9 9-1 3Z"/></svg>
       <span>Clear chat</span>
@@ -70,6 +77,7 @@
   <main id="conversation" aria-label="Conversation">
     <section id="welcome">
       <h1>What can I help you with?</h1>
+      <p id="prompt-info">Loading the Langfuse prompt…</p>
       <button id="starter" type="button">Check Langfuse health</button>
     </section>
     <div id="messages" class="column" role="log" aria-label="Messages" aria-live="polite"></div>
@@ -81,7 +89,7 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg>
       </button>
     </form>
-    <p class="footnote">Each message is independent. Responses are traced in Langfuse.</p>
+    <p class="footnote">Edit and save your prompt in Langfuse, then send a message to try it. Each message is independent.</p>
     <div id="status" class="sr-only" role="status"></div>
   </footer>
   <template id="agent-avatar">
@@ -100,7 +108,15 @@
     let pending = false;
 
     fetch('/health').then(response => response.ok ? response.json() : null).then(health => {
-      if (health) document.querySelector('#model').textContent = health.model;
+      if (health) {
+        document.querySelector('#model').textContent = health.model;
+        document.querySelector('#prompt-info').textContent = `Using ${health.promptName} (${health.promptLabel}).`;
+        for (const [id, url] of [['prompts-link', health.promptsUrl], ['playground-link', health.playgroundUrl]]) {
+          const link = document.getElementById(id);
+          link.href = url;
+          link.hidden = false;
+        }
+      }
     }).catch(() => {});
 
     function scrollToLatest() {
@@ -170,15 +186,21 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ prompt: text })
         });
-        if (!response.ok) throw new Error(`Request failed (${response.status}). Please try again.`);
         const result = await response.json();
+        if (!response.ok) throw new Error(result.detail || `Request failed (${response.status}). Please try again.`);
+        document.querySelector('#model').textContent = result.model;
         reply.content.textContent = result.answer;
         const details = document.createElement('details');
         const summary = document.createElement('summary');
         summary.textContent = 'Run details';
         const metadata = document.createElement('p');
-        metadata.textContent = `Model: ${result.model}\nTool calls: ${result.toolCalls}\nTrace: ${result.traceId}`;
-        details.append(summary, metadata);
+        metadata.textContent = `Prompt: ${result.prompt.name} v${result.prompt.version} (${result.prompt.label})\nModel: ${result.model}\nTool calls: ${result.toolCalls}\nTrace: ${result.traceId}`;
+        const traceLink = document.createElement('a');
+        traceLink.textContent = 'View trace in Langfuse';
+        traceLink.href = result.traceUrl;
+        traceLink.target = '_blank';
+        traceLink.rel = 'noopener noreferrer';
+        details.append(summary, metadata, traceLink);
         reply.bubble.append(details);
         status.textContent = 'Recorded in Langfuse.';
       } catch (error) {

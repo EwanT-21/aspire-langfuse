@@ -73,11 +73,17 @@ if (runAgent)
     }
 
     var model = ollama.AddModel("chat", builder.Configuration["model"] ?? "qwen3.5:2b");
+    var ollamaEndpoint = ollama.GetEndpoint(ollama.Resource.PrimaryEndpoint.EndpointName,
+        KnownNetworkIdentifiers.DefaultAspireContainerNetwork);
+    langfuse.WithEnvironment("LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST", ollamaEndpoint.Property(EndpointProperty.Host));
+    langfuse.Resource.Worker.WithEnvironment("LANGFUSE_LLM_CONNECTION_WHITELISTED_HOST", ollamaEndpoint.Property(EndpointProperty.Host));
     agentService = builder.AddProject<Projects.Langfuse_Agent>("agent")
         .WithHttpEndpoint(name: "http")
         .WithHttpHealthCheck("/health")
         .WithReference(model)
         .WithReference(langfuse)
+        .WithEnvironment("Langfuse__Initialize", "true")
+        .WithEnvironment("Langfuse__PlaygroundBaseUrl", ollamaEndpoint)
         .WaitFor(model)
         .WaitFor(langfuse.Resource.Worker);
 }
@@ -109,6 +115,7 @@ try
 
     var traceId = Guid.NewGuid().ToString("N");
     string? expectedModel = null;
+    int? expectedPromptVersion = null;
     if (agentService is not null)
     {
         Console.WriteLine("Waiting for Ollama model download and agent readiness.");
@@ -118,6 +125,20 @@ try
             BaseAddress = new Uri((await agentService.GetEndpoint("http").GetValueAsync(timeout.Token))!),
             Timeout = TimeSpan.FromMinutes(5)
         };
+        using (var connections = await client.GetAsync("/api/public/llm-connections", timeout.Token))
+        {
+            connections.EnsureSuccessStatusCode();
+            var data = await connections.Content.ReadFromJsonAsync<JsonElement>(timeout.Token);
+            var connection = data.GetProperty("data").EnumerateArray()
+                .Single(item => item.GetProperty("provider").GetString() == "aspire-ollama");
+            if (connection.GetProperty("adapter").GetString() != "openai" ||
+                !connection.GetProperty("baseURL").GetString()!.EndsWith("/v1", StringComparison.Ordinal) ||
+                connection.GetProperty("baseURL").GetString()!.Contains("localhost", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Playground must have a container-reachable Ollama connection.");
+            }
+            Console.WriteLine("Ollama Playground connection was initialized.");
+        }
         using var response = await agentClient.PostAsJsonAsync("/run", new { }, timeout.Token);
         if (!response.IsSuccessStatusCode)
         {
@@ -130,11 +151,39 @@ try
             throw new InvalidOperationException("The real agent must call its tool and return a nonempty model response.");
         }
 
-        traceId = result.GetProperty("traceId").GetString()!;
-        expectedModel = result.GetProperty("model").GetString();
-        Console.WriteLine($"Agent model: {result.GetProperty("model").GetString()}");
-        Console.WriteLine($"Agent tool calls: {result.GetProperty("toolCalls").GetInt32()}");
-        Console.WriteLine($"Agent answer: {result.GetProperty("answer").GetString()}");
+        var initialVersion = result.GetProperty("prompt").GetProperty("version").GetInt32();
+        const string promptName = "aspire-health-assistant";
+        using var initial = await client.GetAsync($"/api/public/v2/prompts/{promptName}?label=latest", timeout.Token);
+        initial.EnsureSuccessStatusCode();
+        var initialPrompt = await initial.Content.ReadFromJsonAsync<JsonElement>(timeout.Token);
+        using var update = await client.PostAsJsonAsync("/api/public/v2/prompts", new
+        {
+            name = promptName,
+            type = "chat",
+            prompt = new[]
+            {
+                new { role = "system", content = "You are an operations assistant testing prompt iteration. Always call get_langfuse_health to check health, then answer in one sentence using the tool result." },
+                new { role = "user", content = "{{message}}" }
+            },
+            config = initialPrompt.GetProperty("config"),
+            commitMessage = "Verify prompt edits take effect without restarting the agent"
+        }, timeout.Token);
+        update.EnsureSuccessStatusCode();
+        var updatedPrompt = await update.Content.ReadFromJsonAsync<JsonElement>(timeout.Token);
+        expectedPromptVersion = updatedPrompt.GetProperty("version").GetInt32();
+
+        using var second = await agentClient.PostAsJsonAsync("/run", new { }, timeout.Token);
+        second.EnsureSuccessStatusCode();
+        var secondRun = await second.Content.ReadFromJsonAsync<JsonElement>(timeout.Token);
+        if (expectedPromptVersion <= initialVersion ||
+            secondRun.GetProperty("prompt").GetProperty("version").GetInt32() != expectedPromptVersion ||
+            secondRun.GetProperty("toolCalls").GetInt32() < 1 || string.IsNullOrWhiteSpace(secondRun.GetProperty("answer").GetString()))
+        {
+            throw new InvalidOperationException("The next agent run must use the edited prompt and call its tool without a restart.");
+        }
+        traceId = secondRun.GetProperty("traceId").GetString()!;
+        expectedModel = secondRun.GetProperty("model").GetString();
+        Console.WriteLine($"Prompt changed from v{initialVersion} to v{expectedPromptVersion} without restarting the agent.");
         Console.WriteLine($"Agent trace: {traceId}");
     }
     else
@@ -195,7 +244,7 @@ try
     ingestionTimeout.CancelAfter(TimeSpan.FromMinutes(2));
     while (true)
     {
-        using var response = await client.GetAsync($"/api/public/v2/observations?traceId={traceId}&fields=core,basic,model,usage", ingestionTimeout.Token);
+        using var response = await client.GetAsync($"/api/public/v2/observations?traceId={traceId}&fields=core,basic,io,model,usage,prompt", ingestionTimeout.Token);
         if (!response.IsSuccessStatusCode)
         {
             throw new InvalidOperationException($"Observation lookup returned {response.StatusCode}: {await response.Content.ReadAsStringAsync(ingestionTimeout.Token)}");
@@ -212,7 +261,20 @@ try
                 throw new InvalidOperationException($"Agent observations did not include model {expectedModel}.");
             }
 
-            Console.WriteLine($"PASS: real Ollama agent, generation, and tool observations persisted ({rows.Length} observations).");
+            var generations = rows.Where(row => row.GetProperty("type").GetString() == "GENERATION").ToArray();
+            if (generations.Any(row => !row.TryGetProperty("promptName", out var promptName) ||
+                    promptName.GetString() != "aspire-health-assistant" ||
+                    !row.TryGetProperty("promptVersion", out var promptVersion) || promptVersion.GetInt32() != expectedPromptVersion))
+            {
+                throw new InvalidOperationException("Every model generation must link to the edited prompt version in Langfuse.");
+            }
+            if (!generations.Any(row => row.TryGetProperty("input", out var input) &&
+                    input.GetRawText().Contains("testing prompt iteration", StringComparison.Ordinal)))
+            {
+                throw new InvalidOperationException("The persisted model input must contain the updated system instructions.");
+            }
+
+            Console.WriteLine($"PASS: prompt reload, Playground configuration, and real agent observations linked to prompt v{expectedPromptVersion} ({rows.Length} observations).");
             break;
         }
 
