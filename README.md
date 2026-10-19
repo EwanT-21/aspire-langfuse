@@ -1,25 +1,26 @@
-# Aspire Langfuse hosting integration
+# Aspire Langfuse
 
-A standalone, CommunityToolkit-style Aspire hosting package for Langfuse. This is a local implementation, not a published or officially accepted CommunityToolkit package. It targets .NET 10 and Aspire 13.6.1, with Langfuse v4 images by default.
+Run [Langfuse](https://langfuse.com) alongside your Aspire application. Start a local Langfuse stack, reuse services already in your AppHost, or connect your application to an existing Langfuse instance.
 
-`AddLangfuse` orchestrates the web/API, worker, PostgreSQL, Redis, ClickHouse, and Aspire Azure Blob Storage resources. Local blob storage uses `AddAzureStorage(...).RunAsEmulator().AddBlobs(...)`. Supply any existing dependencies in the configuration callback; only missing dependencies are created. `AddLangfuseEndpoint` references an existing self-hosted or cloud instance without creating infrastructure.
+Available on NuGet as [EwanT21.Aspire.Hosting.Langfuse](https://www.nuget.org/packages/EwanT21.Aspire.Hosting.Langfuse).
 
-The [MassTransit example](https://github.com/CommunityToolkit/Aspire/tree/main/src/CommunityToolkit.Aspire.MassTransit.RabbitMQ) is a **client** integration. This package follows the toolkit's packaging conventions and [Aspire's hosting integration model](https://aspire.dev/integrations/custom-integrations/hosting-integrations/): `Add*` builders, resource types, deferred expressions, secret parameters, health checks, and resource references. A client SDK or OpenTelemetry exporter remains application-owned.
+## Installation
 
-## Reference from an AppHost
+Requires .NET 10 and Aspire 13.6.1. To run Langfuse locally, you also need Docker and the [Aspire CLI](https://aspire.dev/get-started/install-cli/).
 
-Until a package is published, add a project reference:
+From your AppHost directory, install the package:
 
-```xml
-<ProjectReference Include="path/to/aspire-langfuse/src/Aspire.Langfuse.csproj"
-                  IsAspireProjectResource="false" />
+```bash
+dotnet add package EwanT21.Aspire.Hosting.Langfuse --version 0.1.0-beta.1
 ```
 
-Extensions are in `Aspire.Hosting`; configuration types are in `CommunityToolkit.Aspire.Hosting.Langfuse`. The package ID is `EwanT21.Aspire.Hosting.Langfuse`.
+## Quick start
 
-## Start a complete stack
+Add Langfuse to your AppHost's `Program.cs`:
 
 ```csharp
+using Aspire.Hosting;
+
 var builder = DistributedApplication.CreateBuilder(args);
 
 var langfuse = builder.AddLangfuse("langfuse", options =>
@@ -34,11 +35,93 @@ builder.AddProject<Projects.Api>("api")
 builder.Build().Run();
 ```
 
-Open the web resource from the Aspire dashboard and create your user, organization, project, and API keys. There is no default login. `WithReference` supplies `ConnectionStrings__langfuse` and `LANGFUSE_BASE_URL`. Add `.WithApiKeys(publicKey, secretKey)` to supply `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` as well; both arguments are Aspire parameter builders, and the secret key must be marked secret. Configure your application's Langfuse SDK to consume these variables, or configure an OTLP exporter using Langfuse's instructions. This package does not register an SDK or change Aspire's dashboard telemetry exporter.
+Replace `Projects.Api` with your application's project. This starts Langfuse v4 with its worker, PostgreSQL, Redis, ClickHouse, and Azure Blob Storage emulator. Aspire handles the connections and startup order.
 
-Ports are dynamically assigned when omitted. Both containers wait for infrastructure health checks; the worker also waits for web readiness so database migrations finish first. Application readiness is explicit through `.WaitFor(langfuse)`. The default resource names are `<name>-worker`, `<name>-postgres`, `<name>-db`, `<name>-redis`, `<name>-clickhouse`, `<name>-storage`, and `<name>-blobs`, so multiple stacks can coexist.
+Generated local secrets are saved in your AppHost's user secrets. If your AppHost doesn't already have a `UserSecretsId`, run `dotnet user-secrets init` from its directory before starting it.
 
-## Reuse PostgreSQL, Redis, and Aspire blob storage
+Run your AppHost and open the `langfuse` endpoint in the Aspire dashboard. Create your account, organization, and project, then generate API keys in Langfuse. Omit `port: 3000` to let Aspire assign an available port.
+
+## Connect your application
+
+`WithReference(langfuse)` passes the Langfuse URL to your application. To pass an existing project's API keys as well, add these lines before `builder.Build()`:
+
+```csharp
+var publicKey = builder.AddParameter("langfuse-public-key");
+var secretKey = builder.AddParameter("langfuse-secret-key", secret: true);
+
+langfuse.WithApiKeys(publicKey, secretKey);
+```
+
+Save the values in your AppHost's user secrets:
+
+```bash
+dotnet user-secrets set "Parameters:langfuse-public-key" "pk-lf-..."
+dotnet user-secrets set "Parameters:langfuse-secret-key" "sk-lf-..."
+```
+
+Applications that reference the resource receive:
+
+| Configuration | Value |
+| --- | --- |
+| `ConnectionStrings__langfuse` | Langfuse base URL; the name follows your resource name |
+| `LANGFUSE_BASE_URL` | Langfuse base URL |
+| `LANGFUSE_PUBLIC_KEY` | Public API key, when configured |
+| `LANGFUSE_SECRET_KEY` | Secret API key, when configured |
+
+Configure your application's Langfuse SDK or OpenTelemetry exporter to use these values. The hosting package manages the Langfuse services; telemetry setup lives in your application. The [example agent](https://github.com/EwanT-21/aspire-langfuse/blob/main/examples/Langfuse.Agent/Program.cs) shows OTLP export to Langfuse v4.
+
+### Create a project on first startup
+
+You can also initialize an organization, project, and API keys without using the Langfuse UI. Use `WithInitialProject` in place of `WithApiKeys`:
+
+```csharp
+var userEmail = builder.AddParameter("langfuse-user-email");
+var userPassword = builder.AddParameter("langfuse-user-password", secret: true);
+
+langfuse.WithInitialProject(publicKey, secretKey,
+        organizationId: "my-org", projectId: "my-project")
+    .WithEnvironment("LANGFUSE_INIT_USER_EMAIL", userEmail)
+    .WithEnvironment("LANGFUSE_INIT_USER_PASSWORD", userPassword);
+```
+
+Supply the email and password through AppHost configuration or user secrets, as with the API keys above. Initialization applies when the project and user are first created. Changing these values later does not rotate existing credentials. See [Langfuse's headless initialization guide](https://langfuse.com/self-hosting/administration/headless-initialization).
+
+## Use an existing Langfuse instance
+
+Use `AddLangfuseEndpoint` for Langfuse Cloud or a self-hosted instance:
+
+```csharp
+using Aspire.Hosting;
+
+var builder = DistributedApplication.CreateBuilder(args);
+
+var publicKey = builder.AddParameter("langfuse-public-key");
+var secretKey = builder.AddParameter("langfuse-secret-key", secret: true);
+
+var langfuse = builder.AddLangfuseEndpoint("langfuse", new Uri("https://cloud.langfuse.com"))
+    .WithApiKeys(publicKey, secretKey);
+
+builder.AddProject<Projects.Api>("api")
+    .WithReference(langfuse);
+
+builder.Build().Run();
+```
+
+Use the base URL for your Langfuse instance or cloud region. This passes the URL and keys to your application without starting any Langfuse containers. The endpoint resource does not check the remote service's health.
+
+For a URL supplied through configuration, use an Aspire parameter:
+
+```csharp
+using Aspire.Hosting.ApplicationModel;
+
+var url = builder.AddParameter("langfuse-url");
+var langfuse = builder.AddLangfuseEndpoint("langfuse",
+    ReferenceExpression.Create($"{url.Resource}"));
+```
+
+## Reuse services in your AppHost
+
+Supply resources in the configuration callback to reuse them. Langfuse creates any dependencies you leave out.
 
 ```csharp
 using CommunityToolkit.Aspire.Hosting.Langfuse;
@@ -46,9 +129,12 @@ using CommunityToolkit.Aspire.Hosting.Langfuse;
 var database = builder.AddPostgres("postgres").WithDataVolume()
     .AddDatabase("langfuse-db", "langfuse");
 var redis = builder.AddRedis("redis")
-    .WithArgs("--maxmemory-policy", "noeviction");
+    .WithArgs("--maxmemory-policy", "noeviction")
+    .WithDataVolume();
 var blobs = builder.AddAzureStorage("storage")
-    .RunAsEmulator(emulator => emulator.WithArgs("--disableProductStyleUrl"))
+    .RunAsEmulator(emulator => emulator
+        .WithArgs("--disableProductStyleUrl")
+        .WithDataVolume())
     .AddBlobs("blobs");
 
 var langfuse = builder.AddLangfuse("langfuse", options =>
@@ -60,11 +146,14 @@ var langfuse = builder.AddLangfuse("langfuse", options =>
 });
 ```
 
-Only the Langfuse web, worker, and ClickHouse containers are added here. The integration registers or reuses a logical blob container through Aspire's `AddBlobContainer(...)` and waits for its health check before starting Langfuse. You can also pass an existing Aspire blob container to `LangfuseBlobStorageSettings.AzureBlob(...)`. Supplied services are not reparented or assigned volumes. Use a dedicated Langfuse database; Langfuse applies schema migrations. PostgreSQL is passed as a properly escaped `postgresql://` URI rather than an Npgsql connection string. Redis must use `noeviction` because it holds queues, and sharing it requires accounting for Langfuse's queue keys.
+Give Langfuse its own PostgreSQL database. Redis needs the `noeviction` policy for Langfuse's queues. The Azure Blob resource overload uses Aspire's storage emulator and creates the required blob container for you.
 
-Aspire's `RunAsEmulator()` manages Azurite internally. The integration uses Langfuse's native Azure Blob support and the emulator's `/devstoreaccount1` endpoint path. `--disableProductStyleUrl` is needed when accessing the emulator by its Aspire container hostname. The resource overload uses the standard public development credentials and requires `RunAsEmulator()`; for managed Azure Blob, use the expression overload with account credentials shown below.
+`UseDataVolumes` applies to dependencies created by this integration. Set up persistence on any resources you supply yourself, as shown above.
 
-## Reuse managed or externally hosted dependencies
+<details>
+<summary>Use managed databases, ClickHouse, and blob storage</summary>
+
+For services outside your AppHost, provide connection URLs and storage credentials:
 
 ```csharp
 using Aspire.Hosting.ApplicationModel;
@@ -94,149 +183,84 @@ var langfuse = builder.AddLangfuse("langfuse", options =>
 });
 ```
 
-Store `ConnectionStrings:langfuse-postgres-url` as a PostgreSQL URI and `ConnectionStrings:langfuse-redis-url` as a `redis://` or `rediss://` URI in AppHost configuration or user secrets. Aspire's .NET connection string formats are not interchangeable with these URIs. Each container must be able to reach the supplied hosts; `localhost` inside a container refers to that container.
+Set `ConnectionStrings:langfuse-postgres-url` to a `postgresql://` URI and `ConnectionStrings:langfuse-redis-url` to a `redis://` or `rediss://` URI. These must be URLs the Langfuse containers can reach; `localhost` inside a container refers to that container.
 
-Both ClickHouse HTTP and native migration endpoints are required. Set `Database`, `ClusterEnabled`, and `ClusterName` on `LangfuseClickHouseSettings` for your deployment. Use its optional `Resource` property when an existing Aspire resource should be awaited. External URL-only dependencies have no Aspire health gate.
+ClickHouse needs both an HTTP endpoint and a native migration endpoint. Set `Database`, `ClusterEnabled`, and `ClusterName` on `LangfuseClickHouseSettings` to match your deployment.
 
-Azure Blob requires an account name and account key for Langfuse's native implementation; the account must permit shared-key access. Passing only an Aspire Azure resource's managed-identity service URI is insufficient. For expression-based managed storage settings, create the container before starting Langfuse and grant the required read/write/delete permissions. The Aspire emulator resource overload registers its container through Aspire automatically.
+For managed Azure Blob Storage, create the container beforehand and supply an account key with read, write, and delete permissions. The account must allow shared-key access.
 
-For S3-compatible storage, use:
+For S3-compatible storage, set `options.BlobStorage` with `LangfuseBlobStorageSettings.S3(endpoint, accessKeyId, secretAccessKey, bucketName)`. The endpoint and credentials are `ReferenceExpression` values, as in the Azure example. Create the bucket beforehand; use the settings' `Region` and `ForcePathStyle` properties for your provider. Set `PublicEndpoint` when browsers and SDK clients need a different URL from the one used by the containers. See [Langfuse's blob storage guide](https://langfuse.com/self-hosting/deployment/infrastructure/blobstorage).
 
-```csharp
-options.BlobStorage = LangfuseBlobStorageSettings.S3(
-    endpointExpression, accessKeyExpression, secretKeyExpression, "existing-bucket") with
-{
-    Region = "us-east-1",
-    ForcePathStyle = false,
-    PublicEndpoint = browserReachableEndpointExpression,
-    Resource = existingStorageResource // optional Aspire readiness dependency
-};
-```
+External services are not checked for readiness automatically. Set the ClickHouse or blob storage settings' `Resource` property if an existing Aspire resource should be awaited.
 
-The S3 bucket must already exist. Events, media, and batch exports use separate `events/`, `media/`, and `exports/` prefixes. `Endpoint` is used for server access; `PublicEndpoint` is used for signed media and export URLs and must be reachable by browsers and SDK clients. Local defaults retain host URLs for public links while using container addresses for server traffic. See [Langfuse's blob storage configuration](https://langfuse.com/self-hosting/deployment/infrastructure/blobstorage).
+</details>
 
-## Reference an existing Langfuse instance
+## Configuration and deployment
 
-```csharp
-var publicKey = builder.AddParameter("langfuse-public-key");
-var secretKey = builder.AddParameter("langfuse-secret-key", secret: true);
-var langfuse = builder.AddLangfuseEndpoint("langfuse", new Uri("https://cloud.langfuse.com"))
-    .WithApiKeys(publicKey, secretKey);
+The `AddLangfuse` callback accepts these common settings:
 
-builder.AddProject<Projects.Api>("api").WithReference(langfuse);
-```
+| Setting | Purpose |
+| --- | --- |
+| `UseDataVolumes` | Keep data in named volumes across local runs. Defaults to `false`. |
+| `ImageTag` | Langfuse image version, applied to both web and worker. Defaults to `4`. |
+| `PublicUrl` | Public Langfuse URL when running behind a hostname or reverse proxy. |
+| `NextAuthSecret`, `Salt`, `EncryptionKey` | Supply your own Aspire secret parameters instead of generating local values. |
 
-For a configurable host, use the expression overload:
+Keep the salt and encryption key stable when reusing existing data. The encryption key must be 64 hexadecimal characters.
 
-```csharp
-var url = builder.AddParameter("langfuse-url");
-var langfuse = builder.AddLangfuseEndpoint("langfuse", ReferenceExpression.Create($"{url.Resource}"));
-```
+For further Aspire configuration, access the resources through `langfuse.Resource.Worker`, `.Postgres`, `.Redis`, `.ClickHouse`, and `.BlobStorage`. Calling `WithEnvironment` on `langfuse` configures the web container; apply settings needed by the worker to `langfuse.Resource.Worker` too.
 
-The URI overload validates HTTP(S) base URLs. Parameter expressions are resolved by Aspire later and must contain a valid base URL. Neither overload creates services or probes the remote host. The standard `LANGFUSE_*` variables configure one SDK destination per application. For multiple destinations in one application, use the named connection strings and configure each client explicitly.
+When deploying with Aspire, configure managed blob storage, set `PublicUrl`, and supply secrets through your deployment environment. The default storage emulator is for local use. Choose image versions, networking, TLS, persistence, and backups for your deployment using [Langfuse's self-hosting documentation](https://langfuse.com/self-hosting).
 
-## Initialize a project without using the UI
+## Try the example
 
-```csharp
-var publicKey = builder.AddParameter("langfuse-public-key");
-var secretKey = builder.AddParameter("langfuse-secret-key", secret: true);
-var userEmail = builder.AddParameter("langfuse-user-email");
-var userPassword = builder.AddParameter("langfuse-user-password", secret: true);
+The repository includes an [AppHost](https://github.com/EwanT-21/aspire-langfuse/tree/main/examples/Langfuse.AppHost) and a chat application using Microsoft Agent Framework and Ollama. The agent checks Langfuse's health and sends its agent, model, and tool traces to Langfuse through OTLP.
 
-var langfuse = builder.AddLangfuse("langfuse")
-    .WithInitialProject(publicKey, secretKey, organizationId: "my-org", projectId: "my-project")
-    .WithEnvironment("LANGFUSE_INIT_USER_EMAIL", userEmail)
-    .WithEnvironment("LANGFUSE_INIT_USER_PASSWORD", userPassword);
-```
-
-Supply the key and user values through AppHost configuration or user secrets. Initialization runs on first creation; changing these values does not rotate existing keys or passwords. `WithApiKeys` alone references keys that already exist. See [Langfuse headless initialization](https://langfuse.com/self-hosting/administration/headless-initialization).
-
-## Persistence, customization, and publishing
-
-Named data volumes are opt-in through `UseDataVolumes` and apply to integration-created infrastructure, including Aspire's storage emulator. Configure supplied resources' persistence yourself. The AppHost needs a `UserSecretsId` to persist generated local secrets. Authentication, salt, encryption, and ClickHouse secrets use secret parameters; the encryption key is generated as 32 random bytes encoded as 64 hex characters. Keep salt and encryption values stable when using existing data. Supply `NextAuthSecret`, `Salt`, and `EncryptionKey` parameter builders to reuse your own values.
-
-Both Langfuse containers use `ImageTag`, which defaults to `4`. Default infrastructure versions are PostgreSQL 17, Redis 7, ClickHouse 25.12, and the emulator version supplied by Aspire's Azure Storage integration. Choose and validate exact image versions for your environment. The worker and dependency builders are available through `langfuse.Resource.Worker`, `.Postgres`, `.Redis`, `.ClickHouse`, and `.BlobStorage` for further Aspire configuration. `.WithEnvironment(...)` on `langfuse` configures the web container; apply shared advanced settings to `langfuse.Resource.Worker` as well.
-
-Container resources and deferred connection expressions participate in Aspire publishing. Set `BlobStorage` to managed storage with credentials when publishing; the default emulator is local-only and publishing without an override fails with a clear configuration error. Set `PublicUrl` to the public Langfuse hostname and configure storage's `PublicEndpoint` for signed URLs. Publishing requires explicit secret inputs; generated development secrets are not embedded in manifests. Use your AppHost's deployment integration to select compute, private networking, TLS, storage, and secrets. Production availability, backups, and deployment provisioning remain caller responsibilities.
-
-## Run the Ollama agent example
-
-The [sample AppHost](examples/Langfuse.AppHost/Program.cs) runs Langfuse and Ollama, downloads `qwen3.5:2b`, and connects the [agent service](examples/Langfuse.Agent/Program.cs) to both using Aspire resource references. The agent uses Microsoft Agent Framework and OllamaSharp. Its `get_langfuse_health` tool makes a real HTTP request to the configured Langfuse instance, then the model uses that result to answer. Agent, model generation, and tool spans are exported directly to Langfuse through OTLP.
+From a checkout of this repository, run:
 
 ```bash
-dotnet run --project examples/Langfuse.AppHost
-```
-
-Open the `agent` HTTP endpoint from the Aspire dashboard to use the chat page. Type a message and click the send arrow (or press Enter; Shift+Enter adds a line), or use **Check Langfuse health** to start. Expand **Run details** under a reply for the model, tool call count, and Langfuse trace ID. **Clear chat** clears the visible messages. Each message starts an independent agent run.
-
-The page adapts [Flowbite's default and clean chat examples](https://flowbite.com/docs/components/chat-bubble/) into a centered conversation with a bottom composer, using local HTML/CSS and no frontend build. Flowbite's MIT notice is included in [flowbite-LICENSE.txt](examples/Langfuse.Agent/wwwroot/flowbite-LICENSE.txt).
-
-You can also call the same endpoint directly:
-
-```bash
-curl -X POST http://localhost:<agent-port>/run \
-  -H 'Content-Type: application/json' \
-  -d '{}'
-```
-
-The response includes the model's answer, `toolCalls`, and a `traceId` to find in Langfuse. Supply `{"prompt":"Check Langfuse health and explain the result."}` to change the prompt. This example records prompts, tool results, and answers in Langfuse; its telemetry configuration enables sensitive data capture explicitly.
-
-The default is sized for an RTX 3050 Ti with 4 GB VRAM: Qwen3.5 2B, a 2,048-token context, one loaded model, and one concurrent inference. NVIDIA GPU access is enabled through Aspire's Ollama `WithGPUSupport()`. Docker must have GPU access; available VRAM determines how much Ollama can offload. Model files are cached in the `aspire-langfuse-ollama-models` volume. The first run takes longer while downloading them.
-
-```bash
-# Run on CPU if Docker has no NVIDIA GPU access.
 dotnet run --project examples/Langfuse.AppHost -- --Agent:UseGpu=false
-
-# Select another Ollama model, or run only the Langfuse stack.
-dotnet run --project examples/Langfuse.AppHost -- --Agent:Model=qwen3.5:0.8b
-dotnet run --project examples/Langfuse.AppHost -- --Agent:Enabled=false
 ```
 
-For local and shared modes the sample initializes a project, API keys, and an `agent@example.test` login. Generated keys and the login password persist in the AppHost's user secrets. Retrieve `Parameters:langfuse-user-password` with `dotnet user-secrets list --project examples/Langfuse.AppHost` to sign in. Initialization applies when the database is first created; existing data keeps its existing credentials. See [Ollama tool calling](https://docs.ollama.com/capabilities/tool-calling) and [Agent Framework observability](https://learn.microsoft.com/en-us/agent-framework/tutorials/agents/enable-observability) for the underlying client and tracing APIs.
+The first run downloads the `qwen3.5:2b` model. Open the `agent` endpoint in the Aspire dashboard to chat, then open `langfuse` to view the traces. The example records prompts, tool results, and responses.
 
-## Build and test
+Sign in to Langfuse as `agent@example.test`. Find the generated `Parameters:langfuse-user-password` value with:
+
+```bash
+dotnet user-secrets list --project examples/Langfuse.AppHost
+```
+
+The example saves its credentials in user secrets and keeps its data in Docker volumes. An existing database keeps its original login credentials.
+
+To use an NVIDIA GPU, omit `--Agent:UseGpu=false` and make sure Docker has GPU access. Other options:
+
+| Argument | Effect |
+| --- | --- |
+| `--Agent:Model=qwen3.5:0.8b` | Use a different Ollama model. |
+| `--Agent:Enabled=false` | Run the Langfuse stack without the agent or Ollama. |
+| `--Langfuse:Mode=shared` | Reuse PostgreSQL, Redis, and blob storage resources from the AppHost. |
+| `--Langfuse:Mode=existing` | Connect to an existing Langfuse instance while running the agent and Ollama locally. |
+
+For `existing` mode, set `Parameters:langfuse-url`, `Parameters:langfuse-public-key`, and `Parameters:langfuse-secret-key` in the example AppHost's user secrets.
+
+## Development
 
 ```bash
 dotnet build Aspire.Langfuse.slnx
 dotnet test tests/Aspire.Langfuse.Tests.csproj
 dotnet pack src/Aspire.Langfuse.csproj -c Release
-
-# Docker is required to run either hosted mode.
-dotnet run --project examples/Langfuse.AppHost
-dotnet run --project examples/Langfuse.AppHost -- --Langfuse:Mode=shared
-
-# Existing mode uses your Langfuse host; Ollama and the agent still run locally.
-dotnet run --project examples/Langfuse.AppHost -- --Langfuse:Mode=existing
 ```
 
-For existing mode configure `Parameters:langfuse-url`, `Parameters:langfuse-public-key`, and `Parameters:langfuse-secret-key` in the sample AppHost's user secrets. Model tests run without Docker and cover dependency replacement, URI escaping, network-aware URLs, shared configuration, API-key propagation, persistence annotations, and publishing expressions.
-
-The Docker smoke test creates an ephemeral Aspire stack, initializes a temporary project, sends an OTLP span, and polls Observations API v2 for the persisted result. It uses Aspire's `RunAsEmulator()` for blob storage and stops the test resources on completion:
+Unit tests run without Docker. To check a running stack, the Docker smoke tests initialize a project, send a trace, and check that Langfuse stored it:
 
 ```bash
 dotnet run --project tests/SmokeTests
 dotnet run --project tests/SmokeTests -- --shared=true
-
-# Run the real Qwen3.5 agent and verify its observations in Langfuse.
-dotnet run --project tests/SmokeTests -- --agent=true
+dotnet run --project tests/SmokeTests -- --agent=true --gpu=false
 ```
 
-The second command tests reuse of caller-supplied PostgreSQL, Redis, and an emulated Azure Blob resource. The agent test requires a nonempty model response, a real tool invocation, and persisted `AGENT`, `GENERATION`, and `TOOL` observations with the configured model. Add `--gpu=false` for CPU execution or `--shared=true` to combine modes. The model cache volume remains after the test.
+Found a bug or have a suggestion? [Open an issue](https://github.com/EwanT-21/aspire-langfuse/issues).
 
-Langfuse v4 ingestion uses OTLP with `x-langfuse-ingestion-version: 4`; the legacy `trace-create` ingestion event is not accepted by its default data model.
+## License
 
-## CI and NuGet releases
-
-[CI](.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and manual dispatch. It installs .NET and Aspire CLI 13.6.1, extracts the CLI bundle into the runner's temporary directory, then restores and builds the whole solution in Release, runs the model tests, and packs the hosting library. Keep the CLI version in the workflow aligned with `Aspire.AppHost.Sdk` in the AppHost projects. Explicit setup prepares the dashboard and DCP before the solution's AppHost projects build in parallel. The workflow uploads test results, the `.nupkg`, and the `.snupkg` as Actions artifacts. Packages include the repository metadata and Source Link information for debugging. Docker and GPU-dependent smoke tests remain explicit commands from the section above.
-
-[Publish NuGet](.github/workflows/publish-nuget.yml) runs when a GitHub Release is published. It calls the same CI workflow, checks that the release tag matches the project version, and publishes those validated package artifacts to NuGet.org. Publishing uses [NuGet trusted publishing](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing), which exchanges GitHub's OIDC token for a short-lived API key.
-
-One-time setup:
-
-1. In GitHub, create an environment named `nuget`. Add an Actions variable named `NUGET_USER` there (or at repository level) containing your NuGet.org **profile username**, not your email address.
-2. In your NuGet.org account, add a trusted publishing policy with repository owner `EwanT-21`, repository `aspire-langfuse`, workflow file **`publish-nuget.yml`**, and environment **`nuget`**. Scope the policy to `EwanT21.Aspire.Hosting.Langfuse` with permissions to push new packages and versions. The workflow file field takes only the file name.
-3. Push the workflows to GitHub. Run **CI** manually from the Actions tab to check the build before your first release.
-
-For each release, update `<Version>` in [Aspire.Langfuse.csproj](src/Aspire.Langfuse.csproj), commit it, and publish a GitHub Release tagged `v<Version>`, for example `v0.1.0`. For a prerelease, use a version such as `0.2.0-beta.1`, tag it `v0.2.0-beta.1`, and mark the GitHub Release as a prerelease. A version or prerelease mismatch fails before publication. A push to `main` or a draft release does not publish a package.
-
-The publish job downloads the packages built by CI rather than rebuilding them. Duplicate versions are skipped so a rerun can complete a partially successful package/symbol upload. A release still needs a new version when its package contents change.
+[MIT](https://github.com/EwanT-21/aspire-langfuse/blob/main/LICENSE).
